@@ -1,0 +1,23 @@
+[project]
+name = "discordfs"
+version = "0.1.0"
+description = "A FUSE filesystem that uses Discord as cloud storage backend"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.3",
+    "fusepy>=3.0",
+    "pyzipper>=0.3",
+    "aiosqlite>=0.19",
+    "python-dotenv>=1.0",
+    "click>=8.1",
+]
+
+[project.scripts]
+discordfs = "discordfs.__main__:cli"
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
