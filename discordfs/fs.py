@@ -392,6 +392,14 @@ class DiscordFSOperations(Operations):
         # Check source exists
         file_row = self._run(self._db.get_file(old))
         if file_row:
+            # If destination already exists, remove it first (POSIX rename semantics)
+            existing = self._run(self._db.get_file(new))
+            if existing:
+                msg_ids = self._run(self._db.delete_file(new))
+                if msg_ids:
+                    self._run(self._store.delete_messages(msg_ids))
+                self._cache.invalidate(existing.file_uuid)
+
             # Update manifest on Discord with new path
             old_manifest_id = self._run(self._db.get_manifest_msg_id(file_row.file_uuid))
             if old_manifest_id:
