@@ -4,16 +4,11 @@ A FUSE filesystem that uses Discord as a cloud storage backend. Mount a director
 
 ## How It Works
 
-```
-┌─────────────────┐     ┌──────────────┐     ┌─────────────────┐
-│  Your files     │───▶│  DiscordFS   │───▶│  Discord API    │
-│  (FUSE mount)   │     │  Engine      │     │  (your channel) │
-└─────────────────┘     └──────┬───────┘     └─────────────────┘
-                               │
-                       ┌───────┴───────┐
-                       │  SQLite DB    │
-                       │  (local)      │
-                       └───────────────┘
+```mermaid
+flowchart LR
+    A["Your files<br/>(FUSE mount)"] --> B["DiscordFS Engine"]
+    B --> C["Discord API<br/>(your channel)"]
+    B --> D["SQLite DB<br/>(local)"]
 ```
 
 When you copy a file into the mounted directory:
