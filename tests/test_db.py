@@ -122,3 +122,65 @@ async def test_rebuild_from_scan(db: Database):
     f2 = await db.get_file("/recovered/uuid-r2")
     assert f2 is not None
     assert f2.total_chunks == 1
+
+
+@pytest.mark.asyncio
+async def test_transaction_rollback(db: Database):
+    """Test that transaction rolls back on error."""
+    await db.add_file("uuid-tx", "/tx.txt", 10, "h", 1)
+
+    try:
+        async with db.transaction():
+            await db.rename_file("/tx.txt", "/tx2.txt", auto_commit=False)
+            raise ValueError("Simulated error")
+    except ValueError:
+        pass
+
+    # File should still be at original path (rollback)
+    f = await db.get_file("/tx.txt")
+    assert f is not None
+    assert await db.get_file("/tx2.txt") is None
+
+
+@pytest.mark.asyncio
+async def test_transaction_commit(db: Database):
+    """Test that transaction commits on success."""
+    await db.add_file("uuid-tc", "/tc.txt", 10, "h", 1)
+
+    async with db.transaction():
+        await db.rename_file("/tc.txt", "/tc2.txt", auto_commit=False)
+        await db.update_file("/tc2.txt", 20, "h2", 2, auto_commit=False)
+
+    f = await db.get_file("/tc2.txt")
+    assert f is not None
+    assert f.size_bytes == 20
+    assert f.sha256 == "h2"
+
+
+@pytest.mark.asyncio
+async def test_sync_meta(db: Database):
+    assert await db.get_sync_meta("foo") is None
+
+    await db.set_sync_meta("foo", "bar")
+    assert await db.get_sync_meta("foo") == "bar"
+
+    await db.set_sync_meta("foo", "baz")
+    assert await db.get_sync_meta("foo") == "baz"
+
+
+@pytest.mark.asyncio
+async def test_ensure_parent_dirs(db: Database):
+    await db.ensure_parent_dirs("/a/b/c/file.txt")
+    await db.db.commit()
+
+    assert await db.dir_exists("/a") is True
+    assert await db.dir_exists("/a/b") is True
+    assert await db.dir_exists("/a/b/c") is True
+
+
+@pytest.mark.asyncio
+async def test_file_count(db: Database):
+    assert await db.file_count() == 0
+    await db.add_file("uuid-fc1", "/f1.txt", 10, "h", 1)
+    await db.add_file("uuid-fc2", "/f2.txt", 20, "h", 1)
+    assert await db.file_count() == 2

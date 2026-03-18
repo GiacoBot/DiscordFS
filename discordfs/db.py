@@ -1,9 +1,9 @@
-"""SQLite database for tracking files, chunks, directories, and manifests."""
+"""SQLite database for tracking files, chunks, directories, manifests, and sync state."""
 
 from __future__ import annotations
 
-import json
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Self
@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS dirs (
 CREATE TABLE IF NOT EXISTS manifests (
     file_uuid      TEXT PRIMARY KEY REFERENCES files(file_uuid) ON DELETE CASCADE,
     discord_msg_id TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sync_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_uuid);
@@ -101,6 +106,19 @@ class Database:
         assert self._db is not None, "Database not initialized"
         return self._db
 
+    # ── Transaction support ──────────────────────────────────────
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Execute a block inside BEGIN IMMEDIATE/COMMIT, with ROLLBACK on error."""
+        await self.db.execute("BEGIN IMMEDIATE")
+        try:
+            yield self.db
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
     # ── File operations ──────────────────────────────────────────
 
     async def add_file(
@@ -111,6 +129,8 @@ class Database:
         sha256: str,
         total_chunks: int,
         mode: int = 0o100644,
+        *,
+        auto_commit: bool = True,
     ) -> None:
         now = time.time()
         await self.db.execute(
@@ -118,7 +138,8 @@ class Database:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (file_uuid, path, size_bytes, sha256, total_chunks, now, now, mode),
         )
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
 
     async def get_file(self, path: str) -> FileRow | None:
         async with self.db.execute(
@@ -144,15 +165,18 @@ class Database:
         size_bytes: int,
         sha256: str,
         total_chunks: int,
+        *,
+        auto_commit: bool = True,
     ) -> None:
         now = time.time()
         await self.db.execute(
             "UPDATE files SET size_bytes=?, sha256=?, total_chunks=?, modified_at=? WHERE path=?",
             (size_bytes, sha256, total_chunks, now, path),
         )
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
 
-    async def delete_file(self, path: str) -> list[str]:
+    async def delete_file(self, path: str, *, auto_commit: bool = True) -> list[str]:
         """Delete a file and return its Discord message IDs (chunks + manifest)."""
         file = await self.get_file(path)
         if not file:
@@ -179,15 +203,17 @@ class Database:
 
         # CASCADE handles chunks and manifests
         await self.db.execute("DELETE FROM files WHERE file_uuid = ?", (file.file_uuid,))
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
         return msg_ids
 
-    async def rename_file(self, old_path: str, new_path: str) -> None:
+    async def rename_file(self, old_path: str, new_path: str, *, auto_commit: bool = True) -> None:
         await self.db.execute(
             "UPDATE files SET path = ?, modified_at = ? WHERE path = ?",
             (new_path, time.time(), old_path),
         )
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
 
     async def list_dir(self, dir_path: str) -> list[str]:
         """List immediate children (files and dirs) of a directory path.
@@ -229,13 +255,16 @@ class Database:
         discord_msg_id: str,
         discord_att_url: str | None,
         size_bytes: int,
+        *,
+        auto_commit: bool = True,
     ) -> None:
         await self.db.execute(
             "INSERT INTO chunks (file_uuid, chunk_index, discord_msg_id, discord_att_url, size_bytes, uploaded_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (file_uuid, chunk_index, discord_msg_id, discord_att_url, size_bytes, time.time()),
         )
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
 
     async def get_chunks(self, file_uuid: str) -> list[ChunkRow]:
         async with self.db.execute(
@@ -246,7 +275,7 @@ class Database:
             rows = await cur.fetchall()
             return [ChunkRow(*r) for r in rows]
 
-    async def delete_chunks(self, file_uuid: str) -> list[str]:
+    async def delete_chunks(self, file_uuid: str, *, auto_commit: bool = True) -> list[str]:
         """Delete all chunks for a file, returning their Discord message IDs."""
         msg_ids: list[str] = []
         async with self.db.execute(
@@ -256,21 +285,24 @@ class Database:
             async for row in cur:
                 msg_ids.append(row[0])
         await self.db.execute("DELETE FROM chunks WHERE file_uuid = ?", (file_uuid,))
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
         return msg_ids
 
     # ── Directory operations ─────────────────────────────────────
 
-    async def add_dir(self, path: str, mode: int = 0o40755) -> None:
+    async def add_dir(self, path: str, mode: int = 0o40755, *, auto_commit: bool = True) -> None:
         await self.db.execute(
             "INSERT OR IGNORE INTO dirs (path, created_at, mode) VALUES (?, ?, ?)",
             (path, time.time(), mode),
         )
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
 
-    async def remove_dir(self, path: str) -> None:
+    async def remove_dir(self, path: str, *, auto_commit: bool = True) -> None:
         await self.db.execute("DELETE FROM dirs WHERE path = ?", (path,))
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
 
     async def dir_exists(self, path: str) -> bool:
         if path == "/":
@@ -289,14 +321,23 @@ class Database:
             row = await cur.fetchone()
             return DirRow(*row) if row else None
 
+    async def ensure_parent_dirs(self, path: str) -> None:
+        """Create all parent directories for a given path."""
+        parts = PurePosixPath(path).parents
+        for p in reversed(list(parts)):
+            p_str = str(p)
+            if p_str != "/":
+                await self.add_dir(p_str, auto_commit=False)
+
     # ── Manifest operations ──────────────────────────────────────
 
-    async def add_manifest(self, file_uuid: str, discord_msg_id: str) -> None:
+    async def add_manifest(self, file_uuid: str, discord_msg_id: str, *, auto_commit: bool = True) -> None:
         await self.db.execute(
             "INSERT OR REPLACE INTO manifests (file_uuid, discord_msg_id) VALUES (?, ?)",
             (file_uuid, discord_msg_id),
         )
-        await self.db.commit()
+        if auto_commit:
+            await self.db.commit()
 
     async def get_manifest_msg_id(self, file_uuid: str) -> str | None:
         async with self.db.execute(
@@ -305,6 +346,27 @@ class Database:
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else None
+
+    # ── Sync metadata operations ─────────────────────────────────
+
+    async def get_sync_meta(self, key: str) -> str | None:
+        async with self.db.execute(
+            "SELECT value FROM sync_meta WHERE key = ?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+    async def set_sync_meta(self, key: str, value: str, *, auto_commit: bool = True) -> None:
+        await self.db.execute(
+            "INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        if auto_commit:
+            await self.db.commit()
+
+    async def file_count(self) -> int:
+        async with self.db.execute("SELECT COUNT(*) FROM files") as cur:
+            return (await cur.fetchone())[0]
 
     # ── Rebuild from Discord scan ────────────────────────────────
 
@@ -315,70 +377,61 @@ class Database:
     ) -> int:
         """Rebuild the database from scanned Discord messages.
 
-        chunks: list of dicts with keys: file_uuid, chunk_index, total_chunks, sha256, ts, discord_msg_id, att_url, size_bytes
-        manifests: list of dicts with keys: file_uuid, discord_msg_id, path, size, mode
-
         Returns the number of files recovered.
         """
-        # Clear existing data
-        await self.db.execute("DELETE FROM manifests")
-        await self.db.execute("DELETE FROM chunks")
-        await self.db.execute("DELETE FROM dirs")
-        await self.db.execute("DELETE FROM files")
+        async with self.transaction():
+            # Clear existing data (except sync_meta)
+            await self.db.execute("DELETE FROM manifests")
+            await self.db.execute("DELETE FROM chunks")
+            await self.db.execute("DELETE FROM dirs")
+            await self.db.execute("DELETE FROM files")
 
-        # Group chunks by file_uuid
-        files_map: dict[str, list[dict]] = {}
-        for c in chunks:
-            files_map.setdefault(c["file_uuid"], []).append(c)
+            # Group chunks by file_uuid
+            files_map: dict[str, list[dict]] = {}
+            for c in chunks:
+                files_map.setdefault(c["file_uuid"], []).append(c)
 
-        # Build manifest lookup
-        manifest_map: dict[str, dict] = {}
-        for m in manifests:
-            manifest_map[m["file_uuid"]] = m
+            # Build manifest lookup
+            manifest_map: dict[str, dict] = {}
+            for m in manifests:
+                manifest_map[m["file_uuid"]] = m
 
-        recovered = 0
-        for file_uuid, file_chunks in files_map.items():
-            file_chunks.sort(key=lambda c: c["chunk_index"])
-            first = file_chunks[0]
+            recovered = 0
+            for file_uuid, file_chunks in files_map.items():
+                file_chunks.sort(key=lambda c: c["chunk_index"])
+                first = file_chunks[0]
 
-            meta = manifest_map.get(file_uuid)
-            if meta:
-                path = meta["path"]
-                size = meta.get("size", 0)
-                mode = meta.get("mode", 0o100644)
-            else:
-                # No manifest — place under /recovered/
-                path = f"/recovered/{file_uuid}"
-                size = 0
-                mode = 0o100644
+                meta = manifest_map.get(file_uuid)
+                if meta:
+                    path = meta["path"]
+                    size = meta.get("size", 0)
+                    mode = meta.get("mode", 0o100644)
+                else:
+                    path = f"/recovered/{file_uuid}"
+                    size = 0
+                    mode = 0o100644
 
-            # Ensure parent dirs exist
-            parts = PurePosixPath(path).parents
-            for p in reversed(list(parts)):
-                p_str = str(p)
-                if p_str != "/":
-                    await self.add_dir(p_str)
+                await self.ensure_parent_dirs(path)
 
-            await self.db.execute(
-                "INSERT OR REPLACE INTO files (file_uuid, path, size_bytes, sha256, total_chunks, created_at, modified_at, mode) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (file_uuid, path, size, first["sha256"], first["total_chunks"], first["ts"], first["ts"], mode),
-            )
-
-            for c in file_chunks:
                 await self.db.execute(
-                    "INSERT OR REPLACE INTO chunks (file_uuid, chunk_index, discord_msg_id, discord_att_url, size_bytes, uploaded_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (c["file_uuid"], c["chunk_index"], c["discord_msg_id"], c.get("att_url"), c["size_bytes"], c["ts"]),
+                    "INSERT OR REPLACE INTO files (file_uuid, path, size_bytes, sha256, total_chunks, created_at, modified_at, mode) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (file_uuid, path, size, first["sha256"], first["total_chunks"], first["ts"], first["ts"], mode),
                 )
 
-            if meta:
-                await self.db.execute(
-                    "INSERT OR REPLACE INTO manifests (file_uuid, discord_msg_id) VALUES (?, ?)",
-                    (file_uuid, meta["discord_msg_id"]),
-                )
+                for c in file_chunks:
+                    await self.db.execute(
+                        "INSERT OR REPLACE INTO chunks (file_uuid, chunk_index, discord_msg_id, discord_att_url, size_bytes, uploaded_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (c["file_uuid"], c["chunk_index"], c["discord_msg_id"], c.get("att_url"), c["size_bytes"], c["ts"]),
+                    )
 
-            recovered += 1
+                if meta:
+                    await self.db.execute(
+                        "INSERT OR REPLACE INTO manifests (file_uuid, discord_msg_id) VALUES (?, ?)",
+                        (file_uuid, meta["discord_msg_id"]),
+                    )
 
-        await self.db.commit()
+                recovered += 1
+
         return recovered

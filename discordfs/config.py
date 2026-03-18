@@ -19,6 +19,8 @@ class Config:
     db_path: str = "./discordfs.db"
     cache_dir: str = "~/.discordfs/cache"
     cache_max_mb: int = 500
+    sync_interval: int = 30  # seconds between sync polls
+    sync_enabled: bool = True
 
     @property
     def cache_path(self) -> Path:
@@ -51,4 +53,6 @@ def load_config(env_path: str | None = None) -> Config:
         db_path=os.environ.get("DB_PATH", "./discordfs.db"),
         cache_dir=os.environ.get("CACHE_DIR", "~/.discordfs/cache"),
         cache_max_mb=int(os.environ.get("CACHE_MAX_MB", "500")),
+        sync_interval=int(os.environ.get("SYNC_INTERVAL", "30")),
+        sync_enabled=os.environ.get("SYNC_ENABLED", "true").lower() in ("true", "1", "yes"),
     )

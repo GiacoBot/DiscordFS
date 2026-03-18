@@ -18,6 +18,9 @@ discordfs = "discordfs.__main__:cli"
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio"]
 
+[tool.setuptools.packages.find]
+include = ["discordfs*"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
