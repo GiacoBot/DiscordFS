@@ -90,11 +90,12 @@ class Database:
         self._db: aiosqlite.Connection | None = None
 
     async def init(self) -> Self:
-        self._db = await aiosqlite.connect(self._db_path)
+        # isolation_level=None disables implicit transactions —
+        # we manage them explicitly via transaction()
+        self._db = await aiosqlite.connect(self._db_path, isolation_level=None)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
         await self._db.executescript(_SCHEMA)
-        await self._db.commit()
         return self
 
     async def close(self) -> None:
@@ -133,13 +134,16 @@ class Database:
         auto_commit: bool = True,
     ) -> None:
         now = time.time()
-        await self.db.execute(
+        sql = (
             "INSERT INTO files (file_uuid, path, size_bytes, sha256, total_chunks, created_at, modified_at, mode) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (file_uuid, path, size_bytes, sha256, total_chunks, now, now, mode),
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
+        params = (file_uuid, path, size_bytes, sha256, total_chunks, now, now, mode)
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def get_file(self, path: str) -> FileRow | None:
         async with self.db.execute(
@@ -169,12 +173,13 @@ class Database:
         auto_commit: bool = True,
     ) -> None:
         now = time.time()
-        await self.db.execute(
-            "UPDATE files SET size_bytes=?, sha256=?, total_chunks=?, modified_at=? WHERE path=?",
-            (size_bytes, sha256, total_chunks, now, path),
-        )
+        sql = "UPDATE files SET size_bytes=?, sha256=?, total_chunks=?, modified_at=? WHERE path=?"
+        params = (size_bytes, sha256, total_chunks, now, path)
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def delete_file(self, path: str, *, auto_commit: bool = True) -> list[str]:
         """Delete a file and return its Discord message IDs (chunks + manifest)."""
@@ -202,18 +207,21 @@ class Database:
                 msg_ids.append(row[0])
 
         # CASCADE handles chunks and manifests
-        await self.db.execute("DELETE FROM files WHERE file_uuid = ?", (file.file_uuid,))
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute("DELETE FROM files WHERE file_uuid = ?", (file.file_uuid,))
+        else:
+            await self.db.execute("DELETE FROM files WHERE file_uuid = ?", (file.file_uuid,))
         return msg_ids
 
     async def rename_file(self, old_path: str, new_path: str, *, auto_commit: bool = True) -> None:
-        await self.db.execute(
-            "UPDATE files SET path = ?, modified_at = ? WHERE path = ?",
-            (new_path, time.time(), old_path),
-        )
+        sql = "UPDATE files SET path = ?, modified_at = ? WHERE path = ?"
+        params = (new_path, time.time(), old_path)
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def list_dir(self, dir_path: str) -> list[str]:
         """List immediate children (files and dirs) of a directory path.
@@ -258,13 +266,16 @@ class Database:
         *,
         auto_commit: bool = True,
     ) -> None:
-        await self.db.execute(
+        sql = (
             "INSERT INTO chunks (file_uuid, chunk_index, discord_msg_id, discord_att_url, size_bytes, uploaded_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (file_uuid, chunk_index, discord_msg_id, discord_att_url, size_bytes, time.time()),
+            "VALUES (?, ?, ?, ?, ?, ?)"
         )
+        params = (file_uuid, chunk_index, discord_msg_id, discord_att_url, size_bytes, time.time())
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def get_chunks(self, file_uuid: str) -> list[ChunkRow]:
         async with self.db.execute(
@@ -284,25 +295,32 @@ class Database:
         ) as cur:
             async for row in cur:
                 msg_ids.append(row[0])
-        await self.db.execute("DELETE FROM chunks WHERE file_uuid = ?", (file_uuid,))
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute("DELETE FROM chunks WHERE file_uuid = ?", (file_uuid,))
+        else:
+            await self.db.execute("DELETE FROM chunks WHERE file_uuid = ?", (file_uuid,))
         return msg_ids
 
     # ── Directory operations ─────────────────────────────────────
 
     async def add_dir(self, path: str, mode: int = 0o40755, *, auto_commit: bool = True) -> None:
-        await self.db.execute(
-            "INSERT OR IGNORE INTO dirs (path, created_at, mode) VALUES (?, ?, ?)",
-            (path, time.time(), mode),
-        )
+        sql = "INSERT OR IGNORE INTO dirs (path, created_at, mode) VALUES (?, ?, ?)"
+        params = (path, time.time(), mode)
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def remove_dir(self, path: str, *, auto_commit: bool = True) -> None:
-        await self.db.execute("DELETE FROM dirs WHERE path = ?", (path,))
+        sql = "DELETE FROM dirs WHERE path = ?"
+        params = (path,)
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def dir_exists(self, path: str) -> bool:
         if path == "/":
@@ -332,12 +350,13 @@ class Database:
     # ── Manifest operations ──────────────────────────────────────
 
     async def add_manifest(self, file_uuid: str, discord_msg_id: str, *, auto_commit: bool = True) -> None:
-        await self.db.execute(
-            "INSERT OR REPLACE INTO manifests (file_uuid, discord_msg_id) VALUES (?, ?)",
-            (file_uuid, discord_msg_id),
-        )
+        sql = "INSERT OR REPLACE INTO manifests (file_uuid, discord_msg_id) VALUES (?, ?)"
+        params = (file_uuid, discord_msg_id)
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def get_manifest_msg_id(self, file_uuid: str) -> str | None:
         async with self.db.execute(
@@ -357,12 +376,13 @@ class Database:
             return row[0] if row else None
 
     async def set_sync_meta(self, key: str, value: str, *, auto_commit: bool = True) -> None:
-        await self.db.execute(
-            "INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)",
-            (key, value),
-        )
+        sql = "INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)"
+        params = (key, value)
         if auto_commit:
-            await self.db.commit()
+            async with self.transaction():
+                await self.db.execute(sql, params)
+        else:
+            await self.db.execute(sql, params)
 
     async def file_count(self) -> int:
         async with self.db.execute("SELECT COUNT(*) FROM files") as cur:

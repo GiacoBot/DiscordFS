@@ -171,7 +171,6 @@ async def test_sync_meta(db: Database):
 @pytest.mark.asyncio
 async def test_ensure_parent_dirs(db: Database):
     await db.ensure_parent_dirs("/a/b/c/file.txt")
-    await db.db.commit()
 
     assert await db.dir_exists("/a") is True
     assert await db.dir_exists("/a/b") is True

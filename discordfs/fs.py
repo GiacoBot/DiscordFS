@@ -207,13 +207,12 @@ class DiscordFSOperations(Operations):
             timeout=300,
         )
 
-        # Phase 3: Delete old data from Discord
-        old_msg_ids = self._run(self._db.delete_chunks(file_uuid, auto_commit=False))
+        # Phase 3: Collect old Discord message IDs (read-only)
+        old_chunks = self._run(self._db.get_chunks(file_uuid))
+        old_msg_ids = [c.discord_msg_id for c in old_chunks]
         old_manifest_id = self._run(self._db.get_manifest_msg_id(file_uuid))
         if old_manifest_id:
             old_msg_ids.append(old_manifest_id)
-        if old_msg_ids:
-            self._run(self._store.delete_messages(old_msg_ids))
 
         # Phase 4: Update DB in a single transaction
         async def _update_db():
@@ -225,6 +224,10 @@ class DiscordFSOperations(Operations):
                 await self._db.update_file(path, len(data), sha256, total, auto_commit=False)
 
         self._run(_update_db())
+
+        # Phase 5: Delete old Discord messages (after DB is consistent)
+        if old_msg_ids:
+            self._run(self._store.delete_messages(old_msg_ids))
 
         # Update cache
         self._cache.invalidate(file_uuid)
