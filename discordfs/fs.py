@@ -185,7 +185,7 @@ class DiscordFSOperations(Operations):
         # Phase 1: Upload all new chunks first (accumulate IDs)
         new_chunk_ids: list[tuple[str, str | None, int]] = []  # (msg_id, att_url, size)
         try:
-            for i, chunk_data in enumerate(chunks):
+            for i, chunk_data in enumerate(chunks, 1):
                 msg_id, att_url = self._run(
                     self._store.upload_chunk(file_uuid, i, total, sha256, chunk_data),
                     timeout=300,
@@ -218,7 +218,7 @@ class DiscordFSOperations(Operations):
         async def _update_db():
             async with self._db.transaction():
                 await self._db.delete_chunks(file_uuid, auto_commit=False)
-                for i, (msg_id, att_url, size) in enumerate(new_chunk_ids):
+                for i, (msg_id, att_url, size) in enumerate(new_chunk_ids, 1):
                     await self._db.add_chunk(file_uuid, i, msg_id, att_url, size, auto_commit=False)
                 await self._db.add_manifest(file_uuid, manifest_msg_id, auto_commit=False)
                 await self._db.update_file(path, len(data), sha256, total, auto_commit=False)

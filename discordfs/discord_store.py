@@ -17,7 +17,7 @@ from .retry import retry_discord
 log = logging.getLogger(__name__)
 
 # Regex for parsing DFS messages
-# [DFS] file=<uuid> chunk=0/3 sha256=<hash> ts=<ts> by=<instance_id>
+# [DFS] file=<uuid> chunk=1/3 sha256=<hash> ts=<ts> by=<instance_id>
 _CHUNK_RE = re.compile(
     r"^\[DFS\] file=(?P<file_uuid>[0-9a-f-]+) chunk=(?P<idx>\d+)/(?P<total>\d+) "
     r"sha256=(?P<sha256>[0-9a-f]+) ts=(?P<ts>\d+)(?:\s+by=(?P<by>\S+))?$"
@@ -286,9 +286,6 @@ class DiscordStore:
         m = _META_RE.match(content)
         if m and msg.attachments:
             try:
-                att_data_coro = msg.attachments[0].read()
-                # We can't await inside a sync method, so return a partial
-                # Actually this is called from async context, handle in caller
                 return "meta", {
                     "file_uuid": m.group("file_uuid"),
                     "discord_msg_id": str(msg.id),

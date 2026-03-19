@@ -325,7 +325,7 @@ Each file produces multiple Discord messages:
 
 **Chunk messages** (one per chunk):
 ```
-[DFS] file=a3f8c2e1-9b4d-... chunk=0/3 sha256=e3b0c442... ts=1710700000 by=laptop-f3a1b2c3
+[DFS] file=a3f8c2e1-9b4d-... chunk=1/3 sha256=e3b0c442... ts=1710700000 by=laptop-f3a1b2c3
 ```
 - Attachment: `a3f8c2e1-9b4d-..._0.bin` (encrypted chunk data)
 
