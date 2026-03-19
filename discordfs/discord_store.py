@@ -291,7 +291,7 @@ class DiscordStore:
                 att_data_coro = msg.attachments[0].read()
                 # We can't await inside a sync method, so return a partial
                 # Actually this is called from async context, handle in caller
-                return "meta_pending", {
+                return "meta", {
                     "file_uuid": m.group("file_uuid"),
                     "discord_msg_id": str(msg.id),
                     "ts": float(m.group("ts")),
