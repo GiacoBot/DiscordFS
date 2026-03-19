@@ -16,23 +16,21 @@ from .retry import retry_discord
 
 log = logging.getLogger(__name__)
 
-# Regex for parsing DFS messages — matches both v1 and v2 formats
-# v1: [DFS:v1] file=<uuid> chunk=0/3 sha256=<hash> ts=<ts>
-# v2: [DFS:v2] file=<uuid> chunk=0/3 sha256=<hash> ts=<ts> by=<instance_id>
+# Regex for parsing DFS messages
+# [DFS] file=<uuid> chunk=0/3 sha256=<hash> ts=<ts> by=<instance_id>
 _CHUNK_RE = re.compile(
-    r"^\[DFS:v[12]\] file=(?P<file_uuid>[0-9a-f-]+) chunk=(?P<idx>\d+)/(?P<total>\d+) "
+    r"^\[DFS\] file=(?P<file_uuid>[0-9a-f-]+) chunk=(?P<idx>\d+)/(?P<total>\d+) "
     r"sha256=(?P<sha256>[0-9a-f]+) ts=(?P<ts>\d+)(?:\s+by=(?P<by>\S+))?$"
 )
 
-# v1: [DFS:v1:meta] file=<uuid> ts=<ts>
-# v2: [DFS:v2:meta] file=<uuid> ts=<ts> by=<instance_id>
+# [DFS:meta] file=<uuid> ts=<ts> by=<instance_id>
 _META_RE = re.compile(
-    r"^\[DFS:v[12]:meta\] file=(?P<file_uuid>[0-9a-f-]+) ts=(?P<ts>\d+)(?:\s+by=(?P<by>\S+))?$"
+    r"^\[DFS:meta\] file=(?P<file_uuid>[0-9a-f-]+) ts=(?P<ts>\d+)(?:\s+by=(?P<by>\S+))?$"
 )
 
-# v2 only: [DFS:v2:delete] file=<uuid> ts=<ts> by=<instance_id>
+# [DFS:delete] file=<uuid> ts=<ts> by=<instance_id>
 _DELETE_RE = re.compile(
-    r"^\[DFS:v2:delete\] file=(?P<file_uuid>[0-9a-f-]+) ts=(?P<ts>\d+) by=(?P<by>\S+)$"
+    r"^\[DFS:delete\] file=(?P<file_uuid>[0-9a-f-]+) ts=(?P<ts>\d+) by=(?P<by>\S+)$"
 )
 
 
@@ -44,17 +42,17 @@ def _format_chunk_message(
     instance_id: str,
 ) -> str:
     ts = int(time.time())
-    return f"[DFS:v2] file={file_uuid} chunk={chunk_index}/{total_chunks} sha256={sha256} ts={ts} by={instance_id}"
+    return f"[DFS] file={file_uuid} chunk={chunk_index}/{total_chunks} sha256={sha256} ts={ts} by={instance_id}"
 
 
 def _format_meta_message(file_uuid: str, instance_id: str) -> str:
     ts = int(time.time())
-    return f"[DFS:v2:meta] file={file_uuid} ts={ts} by={instance_id}"
+    return f"[DFS:meta] file={file_uuid} ts={ts} by={instance_id}"
 
 
 def _format_delete_message(file_uuid: str, instance_id: str) -> str:
     ts = int(time.time())
-    return f"[DFS:v2:delete] file={file_uuid} ts={ts} by={instance_id}"
+    return f"[DFS:delete] file={file_uuid} ts={ts} by={instance_id}"
 
 
 def _encrypt_manifest(metadata: dict, password: str) -> bytes:

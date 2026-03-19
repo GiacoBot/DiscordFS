@@ -207,5 +207,85 @@ def info(ctx: click.Context) -> None:
     asyncio.run(do_info())
 
 
+@cli.command()
+@click.option("--dry-run", is_flag=True, help="Show what would be deleted without deleting")
+@click.pass_context
+def purge(ctx: click.Context, dry_run: bool) -> None:
+    """Remove tombstones, orphaned chunks, and orphaned metadata from Discord."""
+    config = load_config(ctx.obj["env"])
+
+    async def do_purge():
+        store = DiscordStore(config.bot_token, config.channel_id, config.password)
+        await store.client.login(config.bot_token)
+
+        try:
+            click.echo("Scanning Discord channel...")
+            chunks_raw, metas_raw, deletes_raw = await store.scan_all_messages()
+
+            deleted_uuids = {d["file_uuid"] for d in deletes_raw}
+            chunk_uuids = {c["file_uuid"] for c in chunks_raw}
+            meta_uuids = {m["file_uuid"] for m in metas_raw}
+
+            msg_ids_to_delete: list[str] = []
+            counts = {
+                "tombstones": 0,
+                "deleted_chunks": 0,
+                "deleted_metas": 0,
+                "orphaned_chunks": 0,
+                "orphaned_metas": 0,
+            }
+
+            # All tombstone messages
+            for d in deletes_raw:
+                msg_ids_to_delete.append(d["discord_msg_id"])
+                counts["tombstones"] += 1
+
+            # Chunks/meta of deleted files
+            for c in chunks_raw:
+                if c["file_uuid"] in deleted_uuids:
+                    msg_ids_to_delete.append(c["discord_msg_id"])
+                    counts["deleted_chunks"] += 1
+
+            for m in metas_raw:
+                if m["file_uuid"] in deleted_uuids:
+                    msg_ids_to_delete.append(m["discord_msg_id"])
+                    counts["deleted_metas"] += 1
+
+            # Orphaned chunks (no matching meta, not deleted)
+            for c in chunks_raw:
+                if c["file_uuid"] not in deleted_uuids and c["file_uuid"] not in meta_uuids:
+                    msg_ids_to_delete.append(c["discord_msg_id"])
+                    counts["orphaned_chunks"] += 1
+
+            # Orphaned meta (no matching chunks, not deleted)
+            for m in metas_raw:
+                if m["file_uuid"] not in deleted_uuids and m["file_uuid"] not in chunk_uuids:
+                    msg_ids_to_delete.append(m["discord_msg_id"])
+                    counts["orphaned_metas"] += 1
+
+            click.echo(f"Tombstones:          {counts['tombstones']}")
+            click.echo(f"Deleted file chunks: {counts['deleted_chunks']}")
+            click.echo(f"Deleted file metas:  {counts['deleted_metas']}")
+            click.echo(f"Orphaned chunks:     {counts['orphaned_chunks']}")
+            click.echo(f"Orphaned metas:      {counts['orphaned_metas']}")
+            click.echo(f"Total to purge:      {len(msg_ids_to_delete)}")
+
+            if not msg_ids_to_delete:
+                click.echo("Nothing to purge.")
+                return
+
+            if dry_run:
+                click.echo("Dry run — no messages deleted.")
+                return
+
+            click.echo("Deleting messages from Discord...")
+            await store.delete_messages(msg_ids_to_delete)
+            click.echo("Purge complete.")
+        finally:
+            await store.client.close()
+
+    asyncio.run(do_purge())
+
+
 if __name__ == "__main__":
     cli()

@@ -36,6 +36,7 @@ When you read a file, the reverse happens: chunks are downloaded, reassembled, d
 - **Thread-safe** — concurrent FUSE operations handled safely
 - **DB rebuild** — reconstruct local database by scanning Discord channel
 - **Tombstone deletions** — file deletions propagate across instances
+- **Channel purge** — remove tombstones, orphaned chunks, and stale metadata from Discord
 
 ---
 
@@ -187,6 +188,32 @@ If you lose your local database or want to set up on a new machine:
 
 This scans the entire Discord channel, parses all DFS messages, decrypts manifests, and reconstructs the local database. Files whose manifests can't be decrypted are placed under `/recovered/<uuid>`.
 
+### Purge Orphaned Messages
+
+Remove tombstones, leftover chunks/metadata of deleted files, and orphaned messages from the Discord channel:
+
+```bash
+# Preview what would be deleted
+.venv/bin/discordfs purge --dry-run
+
+# Actually delete
+.venv/bin/discordfs purge
+```
+
+Example output:
+
+```
+Scanning Discord channel...
+Tombstones:          17
+Deleted file chunks: 14
+Deleted file metas:  14
+Orphaned chunks:     2
+Orphaned metas:      0
+Total to purge:      47
+Deleting messages from Discord...
+Purge complete.
+```
+
 ### Show Filesystem Info
 
 ```bash
@@ -223,11 +250,11 @@ DiscordFS can be mounted on multiple machines simultaneously. Each instance:
 ```
 Machine A                        Discord Channel                    Machine B
 ─────────                        ───────────────                    ─────────
-cp file.txt mnt/ ──────────────▶ [DFS:v2] chunk + manifest ──────▶ (polling)
+cp file.txt mnt/ ──────────────▶ [DFS] chunk + manifest ──────▶ (polling)
                                                                     DB updated
                                                                     file.txt appears
 
-rm mnt/file.txt ───────────────▶ [DFS:v2:delete] tombstone ──────▶ (polling)
+rm mnt/file.txt ───────────────▶ [DFS:delete] tombstone ──────▶ (polling)
                                                                     DB updated
                                                                     file.txt removed
 ```
@@ -298,23 +325,21 @@ Each file produces multiple Discord messages:
 
 **Chunk messages** (one per chunk):
 ```
-[DFS:v2] file=a3f8c2e1-9b4d-... chunk=0/3 sha256=e3b0c442... ts=1710700000 by=laptop-f3a1b2c3
+[DFS] file=a3f8c2e1-9b4d-... chunk=0/3 sha256=e3b0c442... ts=1710700000 by=laptop-f3a1b2c3
 ```
 - Attachment: `a3f8c2e1-9b4d-..._0.bin` (encrypted chunk data)
 
 **Manifest message** (one per file):
 ```
-[DFS:v2:meta] file=a3f8c2e1-9b4d-... ts=1710700000 by=laptop-f3a1b2c3
+[DFS:meta] file=a3f8c2e1-9b4d-... ts=1710700000 by=laptop-f3a1b2c3
 ```
 - Attachment: `a3f8c2e1-9b4d-..._meta.bin` (encrypted JSON with path, size, mode)
 
 **Tombstone message** (on deletion):
 ```
-[DFS:v2:delete] file=a3f8c2e1-9b4d-... ts=1710700000 by=laptop-f3a1b2c3
+[DFS:delete] file=a3f8c2e1-9b4d-... ts=1710700000 by=laptop-f3a1b2c3
 ```
 - No attachment — lightweight deletion signal
-
-All formats are backward-compatible with v1 (which lacks the `by=` field).
 
 ### SQLite Schema
 
