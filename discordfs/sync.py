@@ -15,6 +15,8 @@ log = logging.getLogger(__name__)
 class SyncManager:
     """Background task that polls the Discord channel for changes from other instances."""
 
+    _MAX_ORPHAN_RETRIES = 3
+
     def __init__(
         self,
         db: Database,
@@ -32,6 +34,7 @@ class SyncManager:
         self._poll_interval = poll_interval
         self._task: asyncio.Task | None = None
         self._running = False
+        self._pending_orphans: dict[str, int] = {}  # file_uuid -> retry count
 
     async def start(self) -> None:
         """Start the background polling task."""
@@ -117,7 +120,15 @@ class SyncManager:
         for m in manifests:
             manifest_map[m["file_uuid"]] = m
 
+        # Clear pending orphans that now have a manifest
+        for file_uuid in list(self._pending_orphans):
+            if file_uuid in manifest_map:
+                del self._pending_orphans[file_uuid]
+
         # Process new/updated files
+        deferred_orphan_msg_ids: list[int] = []
+        processed_uuids: set[str] = set()
+
         for file_uuid, file_chunks in files_map.items():
             file_chunks.sort(key=lambda c: c["chunk_index"])
             first = file_chunks[0]
@@ -125,6 +136,7 @@ class SyncManager:
             existing = await self._db.get_file_by_uuid(file_uuid)
             if existing and existing.sha256 == first["sha256"]:
                 # Same content, skip
+                processed_uuids.add(file_uuid)
                 continue
 
             meta = manifest_map.get(file_uuid)
@@ -132,16 +144,29 @@ class SyncManager:
                 path = meta["path"]
                 size = meta.get("size", 0)
                 mode = meta.get("mode", 0o100644)
+            elif existing:
+                # Keep existing path if no new manifest
+                path = existing.path
+                size = existing.size_bytes
+                mode = existing.mode
             else:
-                if existing:
-                    # Keep existing path if no new manifest
-                    path = existing.path
-                    size = existing.size_bytes
-                    mode = existing.mode
-                else:
-                    path = f"/recovered/{file_uuid}"
-                    size = 0
-                    mode = 0o100644
+                # Chunks without manifest for unknown file — defer
+                self._pending_orphans[file_uuid] = self._pending_orphans.get(file_uuid, 0) + 1
+                retries = self._pending_orphans[file_uuid]
+                if retries <= self._MAX_ORPHAN_RETRIES:
+                    log.debug(
+                        "Sync: deferring orphan chunks for %s (attempt %d/%d)",
+                        file_uuid, retries, self._MAX_ORPHAN_RETRIES,
+                    )
+                    for c in file_chunks:
+                        deferred_orphan_msg_ids.append(int(c["discord_msg_id"]))
+                    continue
+                # Exceeded retries — recover as before
+                log.warning("Sync: orphan chunks for %s after %d retries, recovering", file_uuid, retries)
+                path = f"/recovered/{file_uuid}"
+                size = 0
+                mode = 0o100644
+                del self._pending_orphans[file_uuid]
 
             if existing:
                 log.info("Sync: remote update of %s (sha256 changed)", path)
@@ -180,14 +205,29 @@ class SyncManager:
 
             # Invalidate cache for changed files
             self._cache.invalidate(file_uuid)
+            processed_uuids.add(file_uuid)
 
-        # Update last known message ID
+        # Clean pending orphans for successfully processed files
+        for file_uuid in processed_uuids:
+            self._pending_orphans.pop(file_uuid, None)
+
+        # Update last known message ID, rolling back if orphans were deferred
         if new_last_msg_id:
-            await self._db.set_sync_meta("last_known_msg_id", new_last_msg_id)
+            if deferred_orphan_msg_ids:
+                # Roll back cursor to just before the earliest deferred orphan chunk
+                rollback_id = min(deferred_orphan_msg_ids) - 1
+                effective_last = min(int(new_last_msg_id), rollback_id)
+                log.debug(
+                    "Sync: rolling back cursor to %d (deferred %d orphan chunks)",
+                    effective_last, len(deferred_orphan_msg_ids),
+                )
+                await self._db.set_sync_meta("last_known_msg_id", str(effective_last))
+            else:
+                await self._db.set_sync_meta("last_known_msg_id", new_last_msg_id)
 
-        synced = len(files_map) + len(deletes)
+        synced = len(processed_uuids) + len(deletes)
         if synced > 0:
-            log.info("Sync complete: %d files updated/added, %d deleted", len(files_map), len(deletes))
+            log.info("Sync complete: %d files updated/added, %d deleted", len(processed_uuids), len(deletes))
 
     async def initial_sync(self) -> int:
         """Run a full sync if the DB is empty. Returns number of files recovered."""
