@@ -223,6 +223,23 @@ class Database:
         else:
             await self.db.execute(sql, params)
 
+    async def get_files_under_prefix(self, prefix: str) -> list[FileRow]:
+        """Return all files whose path starts with *prefix*."""
+        async with self.db.execute(
+            "SELECT file_uuid, path, size_bytes, sha256, total_chunks, created_at, modified_at, mode "
+            "FROM files WHERE path LIKE ? || '%'",
+            (prefix,),
+        ) as cur:
+            return [FileRow(*row) async for row in cur]
+
+    async def get_dirs_under_prefix(self, prefix: str) -> list[str]:
+        """Return all directory paths that start with *prefix*."""
+        async with self.db.execute(
+            "SELECT path FROM dirs WHERE path LIKE ? || '%'",
+            (prefix,),
+        ) as cur:
+            return [row[0] async for row in cur]
+
     async def list_dir(self, dir_path: str) -> list[str]:
         """List immediate children (files and dirs) of a directory path.
 

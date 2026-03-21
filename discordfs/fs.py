@@ -477,8 +477,37 @@ class DiscordFSOperations(Operations):
             self._run(_rename_db())
             return
 
-        # Maybe it's a directory rename
+        # Maybe it's a directory rename — cascade to all contents
         if self._run(self._db.dir_exists(old)):
+            old_prefix = old + "/"
+            new_prefix = new + "/"
+
+            # Rename all files under this directory
+            files = self._run(self._db.get_files_under_prefix(old_prefix))
+            for f in files:
+                new_path = new_prefix + f.path[len(old_prefix):]
+                old_manifest_id = self._run(self._db.get_manifest_msg_id(f.file_uuid))
+                if old_manifest_id:
+                    self._run(self._store.delete_messages([old_manifest_id]))
+                new_manifest_id = self._run(
+                    self._store.upload_manifest(f.file_uuid, new_path, f.size_bytes, f.mode)
+                )
+
+                async def _rename_file(fuuid=f.file_uuid, mid=new_manifest_id, op=f.path, np=new_path):
+                    async with self._db.transaction():
+                        await self._db.add_manifest(fuuid, mid, auto_commit=False)
+                        await self._db.rename_file(op, np, auto_commit=False)
+
+                self._run(_rename_file())
+
+            # Rename all subdirectories
+            subdirs = self._run(self._db.get_dirs_under_prefix(old_prefix))
+            for d in subdirs:
+                new_dir_path = new_prefix + d[len(old_prefix):]
+                self._run(self._db.remove_dir(d))
+                self._run(self._db.add_dir(new_dir_path))
+
+            # Rename the directory itself
             self._run(self._db.remove_dir(old))
             self._run(self._db.add_dir(new))
             return
