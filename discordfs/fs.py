@@ -441,6 +441,11 @@ class DiscordFSOperations(Operations):
                 self._run(self._store.delete_messages(msg_ids))
             self._run(self._db.update_file(path, 0, "", 0))
             self._cache.invalidate(file_row.file_uuid)
+        else:
+            content = self._download_and_decrypt(file_row.file_uuid, file_row.sha256)
+            buf = io.BytesIO(content)
+            buf.truncate(length)
+            self._upload_file(file_row.file_uuid, path, buf.getvalue(), file_row.mode)
 
     # ── File delete ──────────────────────────────────────────────
 
