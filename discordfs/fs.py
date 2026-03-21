@@ -330,10 +330,12 @@ class DiscordFSOperations(Operations):
             # If opening for writing, prepare a write buffer with existing content
             if flags & (os.O_WRONLY | os.O_RDWR):
                 wb = WriteBuffer()
-                if file_row.size_bytes > 0:
+                if file_row.size_bytes > 0 and not (flags & os.O_TRUNC):
                     content = self._download_and_decrypt(file_row.file_uuid, file_row.sha256)
                     wb.buf.write(content)
                     wb.buf.seek(0)
+                if flags & os.O_TRUNC:
+                    wb.dirty = True
                 self._open_files[fh] = wb
 
         return fh
