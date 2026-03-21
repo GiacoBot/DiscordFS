@@ -383,6 +383,19 @@ class DiscordFSOperations(Operations):
         if parent != "/" and not self._run(self._db.dir_exists(parent)):
             raise FuseOSError(errno.ENOENT)
 
+        existing = self._run(self._db.get_file(path))
+        if existing:
+            # Truncate existing file (POSIX O_CREAT|O_TRUNC semantics)
+            msg_ids = self._run(self._db.delete_chunks(existing.file_uuid))
+            if msg_ids:
+                self._run(self._store.delete_messages(msg_ids))
+            self._run(self._db.update_file(path, 0, "", 0))
+            self._cache.invalidate(existing.file_uuid)
+            with self._lock:
+                fh = self._alloc_fh()
+                self._open_files[fh] = WriteBuffer()
+            return fh
+
         file_uuid = new_file_uuid()
         self._run(
             self._db.add_file(
