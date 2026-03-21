@@ -481,10 +481,8 @@ class DiscordFSOperations(Operations):
                     self._run(self._store.delete_messages(msg_ids))
                 self._cache.invalidate(existing.file_uuid)
 
-            # Update manifest on Discord with new path
+            # Upload new manifest first, then update DB, then delete old (safe order)
             old_manifest_id = self._run(self._db.get_manifest_msg_id(file_row.file_uuid))
-            if old_manifest_id:
-                self._run(self._store.delete_messages([old_manifest_id]))
             new_manifest_id = self._run(
                 self._store.upload_manifest(file_row.file_uuid, new, file_row.size_bytes, file_row.mode)
             )
@@ -495,6 +493,8 @@ class DiscordFSOperations(Operations):
                     await self._db.rename_file(old, new, auto_commit=False)
 
             self._run(_rename_db())
+            if old_manifest_id:
+                self._run(self._store.delete_messages([old_manifest_id]))
             return
 
         # Maybe it's a directory rename — cascade to all contents
@@ -507,8 +507,6 @@ class DiscordFSOperations(Operations):
             for f in files:
                 new_path = new_prefix + f.path[len(old_prefix):]
                 old_manifest_id = self._run(self._db.get_manifest_msg_id(f.file_uuid))
-                if old_manifest_id:
-                    self._run(self._store.delete_messages([old_manifest_id]))
                 new_manifest_id = self._run(
                     self._store.upload_manifest(f.file_uuid, new_path, f.size_bytes, f.mode)
                 )
@@ -519,6 +517,8 @@ class DiscordFSOperations(Operations):
                         await self._db.rename_file(op, np, auto_commit=False)
 
                 self._run(_rename_file())
+                if old_manifest_id:
+                    self._run(self._store.delete_messages([old_manifest_id]))
 
             # Rename all subdirectories
             subdirs = self._run(self._db.get_dirs_under_prefix(old_prefix))
