@@ -10,6 +10,12 @@ from typing import Self
 
 import aiosqlite
 
+
+def _escape_like(s: str) -> str:
+    """Escape SQL LIKE wildcard characters."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     file_uuid    TEXT PRIMARY KEY,
@@ -225,18 +231,20 @@ class Database:
 
     async def get_files_under_prefix(self, prefix: str) -> list[FileRow]:
         """Return all files whose path starts with *prefix*."""
+        escaped = _escape_like(prefix)
         async with self.db.execute(
             "SELECT file_uuid, path, size_bytes, sha256, total_chunks, created_at, modified_at, mode "
-            "FROM files WHERE path LIKE ? || '%'",
-            (prefix,),
+            "FROM files WHERE path LIKE ? || '%' ESCAPE '\\'",
+            (escaped,),
         ) as cur:
             return [FileRow(*row) async for row in cur]
 
     async def get_dirs_under_prefix(self, prefix: str) -> list[str]:
         """Return all directory paths that start with *prefix*."""
+        escaped = _escape_like(prefix)
         async with self.db.execute(
-            "SELECT path FROM dirs WHERE path LIKE ? || '%'",
-            (prefix,),
+            "SELECT path FROM dirs WHERE path LIKE ? || '%' ESCAPE '\\'",
+            (escaped,),
         ) as cur:
             return [row[0] async for row in cur]
 
@@ -245,27 +253,17 @@ class Database:
 
         Returns basenames, not full paths.
         """
-        if dir_path == "/":
-            prefix = "/"
-        else:
-            prefix = dir_path.rstrip("/") + "/"
-
+        prefix = "/" if dir_path == "/" else dir_path.rstrip("/") + "/"
+        escaped = _escape_like(prefix)
         entries: set[str] = set()
 
-        # Files directly in this directory
-        async with self.db.execute("SELECT path FROM files") as cur:
-            async for (fpath,) in cur:
-                if fpath.startswith(prefix):
-                    relative = fpath[len(prefix) :]
-                    # Only immediate children (no '/' in relative path)
-                    if "/" not in relative and relative:
-                        entries.add(relative)
-
-        # Subdirectories
-        async with self.db.execute("SELECT path FROM dirs") as cur:
-            async for (dpath,) in cur:
-                if dpath.startswith(prefix):
-                    relative = dpath[len(prefix) :]
+        for table in ("files", "dirs"):
+            async with self.db.execute(
+                f"SELECT path FROM {table} WHERE path LIKE ? || '%' ESCAPE '\\'",
+                (escaped,),
+            ) as cur:
+                async for (p,) in cur:
+                    relative = p[len(prefix):]
                     if "/" not in relative and relative:
                         entries.add(relative)
 
