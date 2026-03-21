@@ -446,6 +446,10 @@ class DiscordFSOperations(Operations):
     # ── Rename ───────────────────────────────────────────────────
 
     def rename(self, old, new):
+        # Desktop environments move files to .Trash via rename — treat as delete
+        if "/.Trash" in new:
+            return self.unlink(old)
+
         file_row = self._run(self._db.get_file(old))
         if file_row:
             # If destination already exists, remove it first (POSIX rename semantics)
